@@ -1,0 +1,9 @@
+sequenceDiagram
+  participant ApiGateway as ApiGateway
+  participant SearchServic as SearchService
+  actor User
+  participant VectorStoreA as VectorStoreAdapter
+  User->>ApiGateway: GET /search?q
+  ApiGateway->>SearchServic: search(q, limit)
+  SearchServic->>VectorStoreA: query(knn)
+  SearchServic->>ApiGateway: return SearchResults

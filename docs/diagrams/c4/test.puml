@@ -1,0 +1,9 @@
+@startuml
+!include C:/code/lbpr1/docs/diagrams/c4/C4-PlantUML/C4.puml
+
+Person(user, "User")
+System_Boundary(sys, "Test System") {
+  Container(api, "API", "FastAPI", "Routing")
+}
+Rel(user, api, "uses")
+@enduml

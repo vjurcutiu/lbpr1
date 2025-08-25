@@ -1,0 +1,11 @@
+sequenceDiagram
+  participant ApiGateway as ApiGateway
+  participant Indexer as Indexer
+  participant IngestionSer as IngestionService
+  actor User
+  participant VectorStoreA as VectorStoreAdapter
+  User->>ApiGateway: POST /upload (file<=50MB)
+  ApiGateway->>IngestionSer: validate() + create IndexJob
+  IngestionSer->>Indexer: enqueue(IndexJob)
+  Indexer->>VectorStoreA: upsert(vectors)
+  Indexer->>ApiGateway: emit indexing-completed

@@ -1,0 +1,46 @@
+@startuml
+skinparam backgroundColor #141414
+skinparam defaultFontColor #FFFFFF
+skinparam defaultTextAlignment center
+
+' Components
+skinparam RectangleBackgroundColor #2c3e50
+skinparam RectangleBorderColor #3498db
+skinparam RectangleFontColor #FFFFFF
+
+skinparam DatabaseBackgroundColor #2c3e50
+skinparam DatabaseBorderColor #3498db
+skinparam DatabaseFontColor #FFFFFF
+
+' Actors
+skinparam ActorBackgroundColor #141414
+skinparam ActorBorderColor #FFFFFF
+skinparam ActorFontColor #FFFFFF
+
+' Relations
+skinparam ArrowColor #FFFFFF
+skinparam ArrowThickness 2
+
+package "LexBot Backend" as LexBot_Backend {
+  rectangle "ApiGateway\n[app.interface.api]" as ApiGateway
+  rectangle "AuthService\n[app.application.auth]" as AuthService
+  rectangle "IngestionService\n[app.application.ingestion]" as IngestionService
+  rectangle "Indexer\n[app.domain.indexer]" as Indexer
+  rectangle "SearchService\n[app.domain.search]" as SearchService
+  database "VectorStoreAdapter\n[app.infrastructure.vectorstore]" as VectorStoreAdapter
+  database "BlobStorageAdapter\n[app.infrastructure.blob]" as BlobStorageAdapter
+}
+
+ApiGateway --> IngestionService : calls
+ApiGateway --> IngestionService : validate() + create IndexJob
+ApiGateway --> SearchService : search(q, limit)
+ApiGateway --> indexing_jobs : consumes
+Indexer --> ApiGateway : emit indexing-completed
+Indexer --> VectorStoreAdapter : upsert(vectors)
+Indexer --> indexing_jobs : consumes
+IngestionService --> Indexer : enqueue(IndexJob)
+SearchService --> ApiGateway : return SearchResults
+SearchService --> VectorStoreAdapter : query(knn)
+User --> ApiGateway : GET /search?q
+User --> ApiGateway : POST /upload (file<=50MB)
+@enduml
