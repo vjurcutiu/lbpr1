@@ -1,0 +1,22 @@
+name: Contracts pipeline
+on:
+  push:
+    paths: [ 'contracts/**', 'scripts/generate_contracts.py', 'backend/**' ]
+  pull_request:
+    paths: [ 'contracts/**', 'scripts/generate_contracts.py', 'backend/**' ]
+
+jobs:
+  generate-and-enforce:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.11' }
+      - run: make setup
+      - run: make contracts
+      - run: make lint-architecture
+      - name: Upload diagrams
+        uses: actions/upload-artifact@v4
+        with:
+          name: diagrams
+          path: docs/diagrams

@@ -1,0 +1,163 @@
+system: LexBot Backend
+layers:
+  - name: interface
+    pkg: app.interface
+  - name: application
+    pkg: app.application
+  - name: domain
+    pkg: app.domain
+  - name: infrastructure
+    pkg: app.infrastructure
+
+components:
+  - name: ApiGateway
+    layer: interface
+    package: app.interface.api
+    responsibilities:
+      - FastAPI app; routing; authn/authz middleware
+    provides:
+      http:
+        - method: POST
+          path: /upload
+          in: multipart/form-data
+          out: { status: 202, body: { job_id: string } }
+          invariants:
+            - "File <= 50MB"
+            - "User authenticated"
+        - method: GET
+          path: /search
+          params: { q: string, limit: int=10 }
+          out: { status: 200, body: SearchResults }
+    consumes:
+      commands:
+        - queue: indexing-jobs
+          message: IndexJob
+    invariants:
+      - "Never touches storage or vector store directly; uses application services only"
+    forbidden_imports:
+      - app.infrastructure
+      - app.domain
+
+  - name: AuthService
+    layer: application
+    package: app.application.auth
+    responsibilities:
+      - Token validation; permission checks; user context
+    provides: {}
+    consumes: {}
+    invariants:
+      - "Pure application logic; no DB calls directly"
+
+  - name: IngestionService
+    layer: application
+    package: app.application.ingestion
+    responsibilities:
+      - Validate file; compute checksum; create IndexJob; enqueue
+    consumes:
+      http_from: ApiGateway
+    provides:
+      commands:
+        - queue: indexing-jobs
+          message: IndexJob
+    invariants:
+      - "Reject files > 50MB"
+      - "Idempotent jobs (same checksum => no duplicate)"
+
+  - name: Indexer
+    layer: domain
+    package: app.domain.indexer
+    responsibilities:
+      - Text extraction -> chunk -> embed -> upsert to vector store
+    consumes:
+      commands:
+        - queue: indexing-jobs
+          message: IndexJob
+    provides:
+      events:
+        - topic: indexing-completed
+          message: IndexResult
+    invariants:
+      - "Chunk size = 1500 tokens ±10%"
+      - "Retry policy: 3 attempts with exponential backoff"
+
+  - name: SearchService
+    layer: domain
+    package: app.domain.search
+    responsibilities:
+      - Hybrid search (keyword + vector) and ranking
+    provides:
+      queries:
+        - name: search
+          in: { q: string, limit: int=10 }
+          out: SearchResults
+
+  - name: VectorStoreAdapter
+    layer: infrastructure
+    package: app.infrastructure.vectorstore
+    responsibilities:
+      - Pinecone I/O; no business rules
+    invariants:
+      - "Pure adapter bound to an interface; replaceable"
+
+  - name: BlobStorageAdapter
+    layer: infrastructure
+    package: app.infrastructure.blob
+    responsibilities:
+      - Object storage I/O (S3/MinIO); signed URLs
+
+# Optional: define canonical message schemas used across the system
+messages:
+  - name: IndexJob
+    fields:
+      - { name: file_id, type: string }
+      - { name: checksum, type: string }
+      - { name: mime, type: string }
+  - name: IndexResult
+    fields:
+      - { name: file_id, type: string }
+      - { name: chunks, type: int }
+      - { name: embeddings, type: int }
+  - name: SearchResults
+    fields:
+      - { name: total, type: int }
+      - { name: items, type: array<DocHit> }
+  - name: DocHit
+    fields:
+      - { name: id, type: string }
+      - { name: title, type: string }
+      - { name: score, type: float }
+
+# Key flows for auto-generated Mermaid sequences/state diagrams
+flows:
+  - name: UploadAndIndex
+    steps:
+      - from: User
+        to: ApiGateway
+        note: POST /upload (file<=50MB)
+      - from: ApiGateway
+        to: IngestionService
+        note: validate() + create IndexJob
+      - from: IngestionService
+        to: Indexer
+        note: enqueue(IndexJob)
+      - from: Indexer
+        to: VectorStoreAdapter
+        note: upsert(vectors)
+      - from: Indexer
+        to: ApiGateway
+        note: emit indexing-completed
+
+  - name: Query
+    steps:
+      - from: User
+        to: ApiGateway
+        note: GET /search?q
+      - from: ApiGateway
+        to: SearchService
+        note: search(q, limit)
+      - from: SearchService
+        to: VectorStoreAdapter
+        note: query(knn)
+      - from: SearchService
+        to: ApiGateway
+        note: return SearchResults
