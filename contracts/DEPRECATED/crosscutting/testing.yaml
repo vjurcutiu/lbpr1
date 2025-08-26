@@ -1,0 +1,15 @@
+components:
+  - name: ContractTestRunner
+    layer: interface
+    package: tests.contracts
+    responsibilities:
+      - Black-box tests of API contracts and flows
+    invariants:
+      - "One test per public contract"
+      - "Tests run independently of infra state"
+
+flows:
+  - name: Upload_InvalidMime_ShouldFail
+    steps:
+      - { from: ContractTestRunner, to: ApiGateway, note: "POST /v1/files mime=text/html" }
+      - { from: ApiGateway, to: ContractTestRunner, note: "HTTP 415 Unsupported Media Type" }

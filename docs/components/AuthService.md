@@ -4,9 +4,16 @@
 
 **Responsibilities**
 
-- Token validation; permission checks; user context
+- Validate API keys/JWT; issue access tokens
+- Inject sub/tenant/scopes into request context
+
+**Provides**
+
+Queries:
+- validateToken in={'token': 'string'} out={'valid': 'bool', 'sub': 'string', 'tenant_id': 'string', 'scopes': 'array<string>'}
 
 **Invariants**
 
-- Pure application logic; no DB calls directly
+- Clock skew ≤ 60s
+- TTL ≤ 1h
 

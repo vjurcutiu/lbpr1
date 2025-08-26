@@ -1,11 +1,17 @@
 sequenceDiagram
   participant ApiGateway as ApiGateway
+  participant AuthService as AuthService
+  participant EmbeddingAda as EmbeddingAdapter
   participant Indexer as Indexer
   participant IngestionSer as IngestionService
+  participant MetadataServ as MetadataService
   actor User
   participant VectorStoreA as VectorStoreAdapter
-  User->>ApiGateway: POST /upload (file<=50MB)
-  ApiGateway->>IngestionSer: validate() + create IndexJob
+  User->>ApiGateway: POST /v1/files (Bearer)
+  ApiGateway->>AuthService: validateToken
+  ApiGateway->>IngestionSer: validate+checksum+persist → emit IndexJob
   IngestionSer->>Indexer: enqueue(IndexJob)
-  Indexer->>VectorStoreA: upsert(vectors)
-  Indexer->>ApiGateway: emit indexing-completed
+  Indexer->>MetadataServ: generateMetadata(file_id)
+  Indexer->>EmbeddingAda: embed(chunks)
+  Indexer->>VectorStoreA: upsert(vectors@tenant)
+  Indexer->>ApiGateway: event: jobs(IndexResult)

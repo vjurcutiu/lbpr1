@@ -1,0 +1,9 @@
+messages:
+  - { name: IndexJob, fields: [ { name: tenant_id, type: string }, { name: file_id, type: string }, { name: checksum, type: string }, { name: mime, type: string } ] }
+  - { name: IndexResult, fields: [ { name: tenant_id, type: string }, { name: file_id, type: string }, { name: chunks, type: int }, { name: embeddings, type: int }, { name: status, type: "enum[completed,failed]" }, { name: error, type: string? } ] }
+  - { name: SearchResults, fields: [ { name: total, type: int }, { name: items, type: array<DocHit> } ] }
+  - { name: DocHit, fields: [ { name: id, type: string }, { name: title, type: string }, { name: score, type: float } ] }
+  - { name: JobStatus, fields: [ { name: id, type: string }, { name: status, type: "enum[pending,running,completed,failed]" }, { name: detail, type: string? } ] }
+  - { name: ClientEvent, fields: [ { name: type, type: "enum[subscribe,ping]" }, { name: topic, type: string? } ] }
+  - { name: ServerEvent, fields: [ { name: type, type: "enum[job_update,notice,pong]" }, { name: data, type: any } ] }
+  - { name: UsageReport, fields: [ { name: period, type: string }, { name: tenant_id, type: string? }, { name: requests, type: int }, { name: jobs, type: int }, { name: bytes, type: int } ] }

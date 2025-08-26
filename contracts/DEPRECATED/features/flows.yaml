@@ -1,0 +1,36 @@
+flows:
+  - name: UploadAndIndex
+    steps:
+      - { from: User, to: ApiGateway, note: "POST /v1/files (Bearer)" }
+      - { from: ApiGateway, to: AuthService, note: "validateToken" }
+      - { from: ApiGateway, to: TenantService, note: "resolveTenant(sub)" }
+      - { from: ApiGateway, to: QuotaService, note: "getLimits(plan)" }
+      - { from: ApiGateway, to: RateLimiter, note: "checkAndConsume(key)" }
+      - { from: ApiGateway, to: IngestionService, note: "validate+checksum+IndexJob" }
+      - { from: IngestionService, to: JobQueueAdapter, note: "enqueue(IndexJob)" }
+      - { from: Indexer, to: VectorStoreAdapter, note: "upsert(vectors@tenant)" }
+      - { from: Indexer, to: ApiGateway, note: "event: jobs(IndexResult)" }
+      - { from: ApiGateway, to: NotificationAdapter, note: "notify(job_update)" }
+
+  - name: Search
+    steps:
+      - { from: User, to: ApiGateway, note: "GET /v1/search?q (Bearer)" }
+      - { from: ApiGateway, to: AuthService, note: "validateToken" }
+      - { from: ApiGateway, to: TenantService, note: "resolveTenant" }
+      - { from: ApiGateway, to: RateLimiter, note: "checkAndConsume" }
+      - { from: ApiGateway, to: SearchService, note: "search(q, limit, tenant)" }
+      - { from: SearchService, to: VectorStoreAdapter, note: "query(knn @tenant)" }
+      - { from: SearchService, to: ApiGateway, note: "return SearchResults" }
+
+  - name: TokenIssue
+    steps:
+      - { from: User, to: ApiGateway, note: "POST /v1/auth/token (apikey)" }
+      - { from: ApiGateway, to: AuthService, note: "issue access token" }
+      - { from: ApiGateway, to: AuditLogAdapter, note: "audit: issued token" }
+
+  - name: AdminSuspendTenant
+    steps:
+      - { from: User, to: AdminApi, note: "POST /v1/admin/tenants/{id}/suspend" }
+      - { from: AdminApi, to: TenantService, note: "set status=suspended" }
+      - { from: AdminApi, to: NotificationAdapter, note: "notify suspension" }
+      - { from: AdminApi, to: AuditLogAdapter, note: "audit: suspension" }

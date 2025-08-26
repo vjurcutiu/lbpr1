@@ -4,5 +4,5 @@
 
 **Responsibilities**
 
-- Object storage I/O (S3/MinIO); signed URLs
+- S3/MinIO object I/O; signed URLs
 

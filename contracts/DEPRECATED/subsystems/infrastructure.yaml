@@ -1,0 +1,23 @@
+components:
+  - { name: VectorStoreAdapter, layer: infrastructure, package: app.infrastructure.vectorstore,
+      responsibilities: [ "KNN upsert/query; namespace per tenant" ] }
+
+  - { name: BlobStorageAdapter, layer: infrastructure, package: app.infrastructure.blob,
+      responsibilities: [ "S3/MinIO I/O; signed URLs" ] }
+
+  - { name: JobQueueAdapter, layer: infrastructure, package: app.infrastructure.queue,
+      responsibilities: [ "Queue I/O for ingestion-jobs (Redis/SQS)" ] }
+
+  - { name: BillingAdapter, layer: infrastructure, package: app.infrastructure.billing,
+      responsibilities: [ "Usage metering per request/job" ],
+      invariants: [ "Non-blocking; failures → log+alert" ] }
+
+  - { name: TelemetryAdapter, layer: infrastructure, package: app.infrastructure.telemetry,
+      responsibilities: [ "Structured logs, traces, metrics" ],
+      invariants: [ "No PII in logs; redact tokens" ] }
+
+  - { name: AuditLogAdapter, layer: infrastructure, package: app.infrastructure.audit,
+      responsibilities: [ "Append-only audit trail (who/what/when/from)" ] }
+
+  - { name: NotificationAdapter, layer: infrastructure, package: app.infrastructure.notify,
+      responsibilities: [ "Email/Webhook notifications" ] }

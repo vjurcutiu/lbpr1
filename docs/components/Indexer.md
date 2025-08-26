@@ -4,19 +4,21 @@
 
 **Responsibilities**
 
-- Text extraction -> chunk -> embed -> upsert to vector store
+- Extract text → chunk → embed → upsert to vector store
+- Coordinate with MetadataService for enriched fields
 
 **Provides**
 
 Events:
-- topic: indexing-completed message: IndexResult
+- topic: jobs message: IndexResult
 
 **Consumes**
 
-- command: {'queue': 'indexing-jobs', 'message': 'IndexJob'}
+- command: {'queue': 'ingestion-jobs', 'message': 'IndexJob'}
 
 **Invariants**
 
-- Chunk size = 1500 tokens ±10%
-- Retry policy: 3 attempts with exponential backoff
+- Chunk size 1500 ±10%
+- Retries: 3 with exponential backoff
+- All vectors are namespace-per-tenant
 

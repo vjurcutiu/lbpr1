@@ -1,0 +1,11 @@
+sequenceDiagram
+  participant ApiGateway as ApiGateway
+  participant AuthService as AuthService
+  participant SearchServic as SearchService
+  actor User
+  participant VectorStoreA as VectorStoreAdapter
+  User->>ApiGateway: GET /v1/search?q
+  ApiGateway->>AuthService: validateToken
+  ApiGateway->>SearchServic: search(q, limit, tenant)
+  SearchServic->>VectorStoreA: query(knn @tenant)
+  SearchServic->>ApiGateway: return SearchResults

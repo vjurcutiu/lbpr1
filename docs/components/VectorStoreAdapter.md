@@ -4,9 +4,5 @@
 
 **Responsibilities**
 
-- Pinecone I/O; no business rules
-
-**Invariants**
-
-- Pure adapter bound to an interface; replaceable
+- KNN upsert/query; namespace per tenant
 

@@ -2,45 +2,52 @@
 skinparam backgroundColor #141414
 skinparam defaultFontColor #FFFFFF
 skinparam defaultTextAlignment center
-
-' Components
 skinparam RectangleBackgroundColor #2c3e50
-skinparam RectangleBorderColor #3498db
+skinparam RectangleBorderColor #5b95c7
 skinparam RectangleFontColor #FFFFFF
-
 skinparam DatabaseBackgroundColor #2c3e50
-skinparam DatabaseBorderColor #3498db
+skinparam DatabaseBorderColor #5b95c7
 skinparam DatabaseFontColor #FFFFFF
-
-' Actors
 skinparam ActorBackgroundColor #141414
 skinparam ActorBorderColor #FFFFFF
 skinparam ActorFontColor #FFFFFF
-
-' Relations
 skinparam ArrowColor #FFFFFF
 skinparam ArrowThickness 2
 
-package "LexBot Backend" as LexBot_Backend {
+package "Remote Server" as Remote_Server {
+  actor User
   rectangle "ApiGateway\n[app.interface.api]" as ApiGateway
   rectangle "AuthService\n[app.application.auth]" as AuthService
+  rectangle "RateLimiter\n[app.application.ratelimit]" as RateLimiter
   rectangle "IngestionService\n[app.application.ingestion]" as IngestionService
+  rectangle "MetadataService\n[app.domain.metadata]" as MetadataService
   rectangle "Indexer\n[app.domain.indexer]" as Indexer
   rectangle "SearchService\n[app.domain.search]" as SearchService
+  rectangle "ChatService\n[app.domain.chat]" as ChatService
   database "VectorStoreAdapter\n[app.infrastructure.vectorstore]" as VectorStoreAdapter
+  rectangle "EmbeddingAdapter\n[app.infrastructure.embedding]" as EmbeddingAdapter
+  rectangle "LLMAdapter\n[app.infrastructure.llm]" as LLMAdapter
   database "BlobStorageAdapter\n[app.infrastructure.blob]" as BlobStorageAdapter
 }
 
+ApiGateway --> AuthService : validateToken
+ApiGateway --> ChatService : calls
+ApiGateway --> ChatService : chat(ChatRequest)
 ApiGateway --> IngestionService : calls
-ApiGateway --> IngestionService : validate() + create IndexJob
-ApiGateway --> SearchService : search(q, limit)
-ApiGateway --> indexing_jobs : consumes
-Indexer --> ApiGateway : emit indexing-completed
-Indexer --> VectorStoreAdapter : upsert(vectors)
-Indexer --> indexing_jobs : consumes
+ApiGateway --> IngestionService : validate+checksum+persist → emit IndexJob
+ApiGateway --> SearchService : search(q, limit, tenant)
+ChatService --> ApiGateway : ChatResponse (or WS stream)
+ChatService --> LLMAdapter : synthesize answer (prompt+context)
+ChatService --> SearchService : retrieve top-k for grounding
+Indexer --> ApiGateway : event: jobs(IndexResult)
+Indexer --> EmbeddingAdapter : embed(chunks)
+Indexer --> MetadataService : generateMetadata(file_id)
+Indexer --> VectorStoreAdapter : upsert(vectors@tenant)
+Indexer --> ingestion_jobs : consumes
 IngestionService --> Indexer : enqueue(IndexJob)
 SearchService --> ApiGateway : return SearchResults
-SearchService --> VectorStoreAdapter : query(knn)
-User --> ApiGateway : GET /search?q
-User --> ApiGateway : POST /upload (file<=50MB)
+SearchService --> VectorStoreAdapter : query(knn @tenant)
+User --> ApiGateway : GET /v1/search?q
+User --> ApiGateway : POST /v1/chat (message, stream?)
+User --> ApiGateway : POST /v1/files (Bearer)
 @enduml

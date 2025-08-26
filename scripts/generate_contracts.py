@@ -1,133 +1,200 @@
 # /scripts/generate_contracts.py
 """
-Reads /contracts/components.yaml and generates:
-- /docs/diagrams/c4/structurizr.dsl          (C4 model)
-- /docs/diagrams/c4/c4.puml                  (C4-PlantUML)
+Reads /contracts/components.toml and generates:
+- /docs/diagrams/c4/structurizr.dsl          (Structurizr DSL)
 - /docs/diagrams/mermaid/*.mmd               (sequence diagrams per flow)
 - /docs/components/*.md                      (component pages)
 - /architecture/importlinter.ini             (Python boundary enforcement)
+- /docs/diagrams/c4/c4_plain_{dark,light}.puml (self-contained PlantUML)
 
-Deps: pyyaml (pip install pyyaml)
-Optional: import-linter (for CI enforcement)
+Deps:
+  - Python 3.11+ (uses tomllib). For 3.10 or earlier: pip install tomli and it will be imported.
 """
+
 from __future__ import annotations
+import os
 from pathlib import Path
 import re
-import yaml
+import textwrap
+
+# --- TOML loader --------------------------------------------------------------
+try:
+    import tomllib  # Py 3.11+
+except ModuleNotFoundError:  # pragma: no cover
+    import tomli as tomllib  # type: ignore
 
 ROOT = Path(__file__).resolve().parents[1]
-YAML_PATH = ROOT / "contracts" / "components.yaml"
+CONTRACTS_TOML = ROOT / "contracts" / "components.toml"
+
 DOCS = ROOT / "docs"
 C4_DIR = DOCS / "diagrams" / "c4"
 MM_DIR = DOCS / "diagrams" / "mermaid"
 COMP_DIR = DOCS / "components"
 ARCH_DIR = ROOT / "architecture"
 
-USER_ACTOR_NAME = "User"
+USER = "User"
 
 
+# --- Helpers: filesystem ------------------------------------------------------
 def ensure_dirs() -> None:
     for d in (DOCS, C4_DIR, MM_DIR, COMP_DIR, ARCH_DIR):
         d.mkdir(parents=True, exist_ok=True)
 
 
 def load_model() -> dict:
-    with open(YAML_PATH, "r", encoding="utf-8") as f:
-        return yaml.safe_load(f)
+    if not CONTRACTS_TOML.exists():
+        raise FileNotFoundError(f"Missing {CONTRACTS_TOML}")
+    with open(CONTRACTS_TOML, "rb") as f:
+        model = tomllib.load(f) or {}
+    # debug line; helpful during tasks troubleshooting
+    print(f"[contracts] loaded: {CONTRACTS_TOML}")
+    print(f"[contracts] system: {model.get('system')}")
+    return model
 
 
-# -------------------------------
-# Structurizr DSL (unchanged)
-# -------------------------------
+# --- Normalization: accept both dict and list-of-dicts for nested sections ----
+def _merge_list_of_dicts(items):
+    merged = {}
+    for item in items or []:
+        if not isinstance(item, dict):
+            continue
+        for k, v in item.items():
+            # for list-typed keys (commands/events/websockets/http/queries) we append
+            if isinstance(v, list) and k in ("commands", "events", "websockets", "http", "queries"):
+                merged.setdefault(k, [])
+                merged[k].extend(v)
+            else:
+                merged[k] = v
+    return merged
+
+
+def norm_section(sec):
+    """
+    Accept either:
+      - dict-like (TOML table)
+      - list of dicts (TOML array of tables)
+    Return a single dict with list keys combined.
+    """
+    if sec is None:
+        return {}
+    if isinstance(sec, dict):
+        return sec
+    if isinstance(sec, list):
+        return _merge_list_of_dicts(sec)
+    return {}
+
+
+def norm_component(c: dict) -> dict:
+    c = dict(c)  # shallow copy
+    c["provides"] = norm_section(c.get("provides"))
+    c["consumes"] = norm_section(c.get("consumes"))
+    # ensure lists where expected
+    for key in ("responsibilities", "invariants", "forbidden_imports"):
+        if c.get(key) is None:
+            c[key] = []
+        elif not isinstance(c[key], list):
+            c[key] = [c[key]]
+    return c
+
+
+def iter_components(model: dict):
+    for c in model.get("components", []) or []:
+        yield norm_component(c)
+
+
+# --- Structurizr DSL ----------------------------------------------------------
 def to_structurizr(model: dict) -> str:
     system = model.get("system", "System")
-    components = model.get("components", [])
+    components = list(iter_components(model))
 
-    def container_line(c: dict) -> str:
+    def container_line(c):
         name = c["name"]
         layer = c.get("layer", "component")
         tech = c.get("package", c.get("layer", ""))
         return f'      container "{name}" "{tech}" "{layer}"\n'
 
-    rels: list[tuple[str, str, str]] = []
+    rels = []
+
+    # relationships from consumes/provides
     for c in components:
         src = c["name"]
         consumes = c.get("consumes", {})
         if isinstance(consumes, dict) and "http_from" in consumes:
             rels.append((consumes["http_from"], src, "calls"))
+        # queues/events
         for q in consumes.get("commands", []) or []:
-            rels.append((src, q.get("queue", "?"), "consumes"))
+            qname = q.get("queue") or q.get("topic") or "queue"
+            rels.append((src, qname, "consumes"))
 
+    # infer from flows
     for flow in model.get("flows", []) or []:
-        for s in flow.get("steps", []):
+        for s in flow.get("steps", []) or []:
             a, b = s.get("from"), s.get("to")
             if a and b:
-                rels.append((a, b, ""))
+                rels.append((a, b, s.get("note", "")))
 
-    lines: list[str] = []
-    lines.append(f'workspace "{system}" {{\n')
-    lines.append("  model {\n")
-    lines.append("    person User\n")
-    lines.append(f'    softwareSystem "{system}" {{\n')
+    # Build DSL
+    out = []
+    out.append(f'workspace "{system}" {{\n')
+    out.append("  model {\n")
+    out.append("    person User\n")
+    out.append(f'    softwareSystem "{system}" {{\n')
     for c in components:
-        lines.append(container_line(c))
+        out.append(container_line(c))
     seen = set()
     for a, b, label in rels:
-        key = (a, b, label)
+        key = (a, b, label or "")
         if key in seen:
             continue
         seen.add(key)
-        if a == USER_ACTOR_NAME:
-            lines.append(f'      User -> "{b}" "{label or ""}"\n')
+        if a == USER:
+            out.append(f'      User -> "{b}" "{label or ""}"\n')
         else:
-            lines.append(f'      "{a}" -> "{b}" "{label or ""}"\n')
-    lines.append("    }\n")
-    lines.append("  }\n")
-    lines.append("  views {\n")
-    lines.append(f'    container "{system}" {{\n')
-    lines.append("      include *\n      autoLayout\n    }\n")
-    lines.append("  }\n")
-    lines.append("}\n")
-    return "".join(lines)
+            out.append(f'      "{a}" -> "{b}" "{label or ""}"\n')
+    out.append("    }\n")
+    out.append("  }\n")
+    out.append("  views {\n")
+    out.append(f'    container "{system}" {{\n')
+    out.append("      include *\n      autoLayout\n    }\n")
+    out.append("  }\n")
+    out.append("}\n")
+    return "".join(out)
 
 
-# -------------------------------
-# Mermaid sequence diagrams
-# -------------------------------
+# --- Mermaid sequences --------------------------------------------------------
 def to_mermaid_sequences(model: dict) -> dict[str, str]:
-    out: dict[str, str] = {}
+    diagrams = {}
     for flow in model.get("flows", []) or []:
         name = flow.get("name", "Flow")
-        steps = flow.get("steps", [])
+        steps = flow.get("steps", []) or []
+
         participants = set()
         for s in steps:
             participants.add(s.get("from"))
             participants.add(s.get("to"))
         participants.discard(None)
+
         lines = ["sequenceDiagram\n"]
         for p in sorted(participants):
-            if p == USER_ACTOR_NAME:
-                lines.append(f"  actor {p}\n")
+            if p == USER:
+                lines.append("  actor User\n")
             else:
-                alias = _alias(p)
+                alias = re.sub(r"\W+", "", p)[:12] or "X"
                 lines.append(f"  participant {alias} as {p}\n")
+
         for s in steps:
             a, b, note = s.get("from"), s.get("to"), s.get("note", "")
-            if a and b:
-                a_alias = a if a == USER_ACTOR_NAME else _alias(a)
-                b_alias = b if b == USER_ACTOR_NAME else _alias(b)
-                lines.append(f"  {a_alias}->>{b_alias}: {note}\n")
-        out[name] = "".join(lines)
-    return out
+            if not a or not b:
+                continue
+            a_alias = "User" if a == USER else re.sub(r"\W+", "", a)[:12]
+            b_alias = "User" if b == USER else re.sub(r"\W+", "", b)[:12]
+            lines.append(f"  {a_alias}->>{b_alias}: {note}\n")
+
+        diagrams[name] = "".join(lines)
+    return diagrams
 
 
-def _alias(name: str) -> str:
-    return re.sub(r"[^A-Za-z0-9]", "", name)[:12] or "X"
-
-
-# -------------------------------
-# Component Markdown
-# -------------------------------
+# --- Component docs -----------------------------------------------------------
 def component_markdown(c: dict) -> str:
     name = c["name"]
     layer = c.get("layer", "")
@@ -148,7 +215,7 @@ def component_markdown(c: dict) -> str:
         md.append("\n")
     if provides:
         md.append("**Provides**\n\n")
-        if "http" in provides:
+        if provides.get("http"):
             md.append("HTTP:\n")
             for ep in provides["http"]:
                 method = ep.get("method", "").upper()
@@ -156,32 +223,37 @@ def component_markdown(c: dict) -> str:
                 md.append(f"- `{method} {path}`\n")
                 if ep.get("params"):
                     md.append(f"  - params: `{ep['params']}`\n")
+                if ep.get("in"):
+                    md.append(f"  - in: `{ep['in']}`\n")
                 if ep.get("out"):
                     md.append(f"  - returns: `{ep['out']}`\n")
                 if ep.get("invariants"):
                     for inv in ep["invariants"]:
                         md.append(f"  - invariant: {inv}\n")
-        if "commands" in provides:
+        if provides.get("commands"):
             md.append("Commands:\n")
             for q in provides["commands"]:
                 md.append(f"- queue: {q.get('queue')} message: {q.get('message')}\n")
-        if "events" in provides:
+        if provides.get("events"):
             md.append("Events:\n")
             for e in provides["events"]:
                 md.append(f"- topic: {e.get('topic')} message: {e.get('message')}\n")
-        if "queries" in provides:
+        if provides.get("queries"):
             md.append("Queries:\n")
             for q in provides["queries"]:
                 md.append(f"- {q.get('name')} in={q.get('in')} out={q.get('out')}\n")
+        if provides.get("websockets"):
+            md.append("WebSockets:\n")
+            for w in provides["websockets"]:
+                md.append(f"- path: {w.get('path')} in={w.get('msg_in')} out={w.get('msg_out')}\n")
         md.append("\n")
     if consumes:
         md.append("**Consumes**\n\n")
         if "http_from" in consumes:
             md.append(f"- http_from: {consumes['http_from']}\n")
         for kind in ("commands", "events"):
-            if kind in consumes:
-                for item in consumes[kind]:
-                    md.append(f"- {kind.rstrip('s')}: {item}\n")
+            for item in consumes.get(kind, []) or []:
+                md.append(f"- {kind.rstrip('s')}: {item}\n")
         md.append("\n")
     if invariants:
         md.append("**Invariants**\n\n")
@@ -196,19 +268,17 @@ def component_markdown(c: dict) -> str:
     return "".join(md)
 
 
-# -------------------------------
-# Import Linter config
-# -------------------------------
+# --- Import Linter config -----------------------------------------------------
 def to_import_linter(model: dict) -> str:
     layers = model.get("layers", [])
-    components = model.get("components", [])
-    ordered = ",\n    ".join(l["pkg"] for l in layers)
+    components = list(iter_components(model))
+
+    ordered = ",\n    ".join(l.get("pkg", l.get("name", "")) for l in layers)
 
     lines = ["[importlinter]\n", "root_package = app\n\n"]
     lines.append("[contracts.layering]\n")
     lines.append("type = layers\n")
-    lines.append("layers =\n    ")
-    lines.append(ordered + "\n\n")
+    lines.append("layers =\n    " + ordered + "\n\n")
 
     idx = 1
     for c in components:
@@ -226,102 +296,21 @@ def to_import_linter(model: dict) -> str:
     return "".join(lines)
 
 
-# -------------------------------
-# C4-PlantUML emitter (NEW)
-# -------------------------------
-def to_c4_plantuml(model: dict) -> str:
-    """
-    Emits a single C4 container-level diagram using C4-PlantUML.
-    Renders:
-      - Person(User)
-      - System_Boundary with one Container per component
-      - Relations inferred from flows and simple consumes
-    """
-    system = model.get("system", "System")
-    components = model.get("components", [])
-
-    # Helper: stable IDs for PlantUML
-    def cid(name: str) -> str:
-        # letters/digits/underscore; lowercase to keep consistent
-        ident = re.sub(r"[^A-Za-z0-9_]", "_", name)
-        ident = re.sub(r"_+", "_", ident).strip("_")
-        return (ident or "C").lower()
-
-    # Gather relationships (like Structurizr)
-    rels: set[tuple[str, str, str]] = set()
-    for c in components:
-        src = c["name"]
-        consumes = c.get("consumes", {})
-        if isinstance(consumes, dict) and "http_from" in consumes:
-            rels.add((consumes["http_from"], src, "calls"))
-        for q in consumes.get("commands", []) or []:
-            rels.add((src, q.get("queue", "?"), "consumes"))
-
-    for flow in model.get("flows", []) or []:
-        for s in flow.get("steps", []):
-            a, b = s.get("from"), s.get("to")
-            if a and b:
-                rels.add((a, b, ""))
-
-    # Build PUML
-    lines: list[str] = []
-    lines.append("@startuml\n")
-    # Pull the C4 include from the official repo (no local files needed)
-    lines.append("!includeurl https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4.puml\n\n")
-    lines.append("LAYOUT_WITH_LEGEND()\n\n")
-    lines.append(f'Person({cid(USER_ACTOR_NAME)}, "{USER_ACTOR_NAME}")\n')
-    lines.append(f'System_Boundary(sys, "{system}") {{\n')
-
-    # Emit containers
-    for c in components:
-        _id = cid(c["name"])
-        name = c["name"]
-        tech = c.get("package", c.get("layer", ""))
-        desc = "; ".join(c.get("responsibilities", []) or [])[:180]
-        tech_label = f"{tech}" if tech else ""
-        # Container(id, "Name", "Tech", "Desc")
-        lines.append(f'  Container({_id}, "{_escape(name)}", "{_escape(tech_label)}", "{_escape(desc)}")\n')
-
-    lines.append("}\n\n")
-
-    # Emit relations
-    for a, b, label in sorted(rels):
-        a_id = cid(a)
-        b_id = cid(b)
-        if a == USER_ACTOR_NAME:
-            lines.append(f"Rel({cid(USER_ACTOR_NAME)}, {b_id}, \"{_escape(label)}\")\n")
-        else:
-            # Only relate if both ends are known or from user/queue
-            lines.append(f"Rel({a_id}, {b_id}, \"{_escape(label)}\")\n")
-
-    lines.append("\n@enduml\n")
-    return "".join(lines)
-
-
-def _escape(s: str) -> str:
-    return s.replace("\\", "\\\\").replace('"', '\\"')
-
+# --- Plain PlantUML (themes) --------------------------------------------------
 THEMES = {
     "dark": [
         "skinparam backgroundColor #141414",
         "skinparam defaultFontColor #FFFFFF",
         "skinparam defaultTextAlignment center",
-        "",
-        "' Components",
         "skinparam RectangleBackgroundColor #2c3e50",
-        "skinparam RectangleBorderColor #3498db",
+        "skinparam RectangleBorderColor #5b95c7",
         "skinparam RectangleFontColor #FFFFFF",
-        "",
         "skinparam DatabaseBackgroundColor #2c3e50",
-        "skinparam DatabaseBorderColor #3498db",
+        "skinparam DatabaseBorderColor #5b95c7",
         "skinparam DatabaseFontColor #FFFFFF",
-        "",
-        "' Actors",
         "skinparam ActorBackgroundColor #141414",
         "skinparam ActorBorderColor #FFFFFF",
         "skinparam ActorFontColor #FFFFFF",
-        "",
-        "' Relations",
         "skinparam ArrowColor #FFFFFF",
         "skinparam ArrowThickness 2",
     ],
@@ -329,56 +318,45 @@ THEMES = {
         "skinparam backgroundColor #FFFFFF",
         "skinparam defaultFontColor #000000",
         "skinparam defaultTextAlignment center",
-        "",
-        "' Components",
         "skinparam RectangleBackgroundColor #e8f4ff",
         "skinparam RectangleBorderColor #2980b9",
         "skinparam RectangleFontColor #000000",
-        "",
         "skinparam DatabaseBackgroundColor #fef9e7",
         "skinparam DatabaseBorderColor #f1c40f",
         "skinparam DatabaseFontColor #000000",
-        "",
-        "' Actors",
         "skinparam ActorBackgroundColor #FFFFFF",
         "skinparam ActorBorderColor #000000",
         "skinparam ActorFontColor #000000",
-        "",
-        "' Relations",
         "skinparam ArrowColor #000000",
         "skinparam ArrowThickness 2",
     ],
 }
 
 
+def _pid(name: str) -> str:
+    s = re.sub(r"[^A-Za-z0-9_]", "_", name)
+    s = re.sub(r"_+", "_", s).strip("_")
+    return (s or "X")[:24]
+
+
 def to_plain_plantuml(model: dict, theme: str = "dark") -> str:
-    """
-    Self-contained PlantUML (no external includes).
-    Renders: a person, a system boundary, one node per component, and relations.
-    """
-    import re
     system = model.get("system", "System")
-    components = model.get("components", [])
-    flows = model.get("flows", []) or []
+    comps = list(iter_components(model))
 
-    def pid(name: str) -> str:
-        s = re.sub(r"[^A-Za-z0-9_]", "_", name)
-        s = re.sub(r"_+", "_", s).strip("_")
-        return (s or "X")[:24]
-
-    # Collect relations (like we did for Structurizr)
+    # collect relations like DSL
     rels = set()
-    for c in components:
+    for c in comps:
         src = c["name"]
-        consumes = c.get("consumes", {}) or {}
-        if "http_from" in consumes:
-            rels.add((consumes["http_from"], src, "calls"))
-        for q in consumes.get("commands", []) or []:
-            rels.add((src, q.get("queue", "?"), "consumes"))
-    for f in flows:
-        for s in f.get("steps", []):
+        cons = c.get("consumes", {}) or {}
+        if "http_from" in cons:
+            rels.add((cons["http_from"], src, "calls"))
+        for q in cons.get("commands", []) or []:
+            rels.add((src, q.get("queue", "queue"), "consumes"))
+    for f in model.get("flows", []) or []:
+        for s in f.get("steps", []) or []:
             a, b = s.get("from"), s.get("to")
-            if a and b: rels.add((a, b, s.get("note", "")))
+            if a and b:
+                rels.add((a, b, s.get("note", "")))
 
     out = []
     out.append("@startuml\n")
@@ -386,57 +364,46 @@ def to_plain_plantuml(model: dict, theme: str = "dark") -> str:
         out.append(line + "\n")
     out.append("\n")
 
-    out.append(f'package "{system}" as {pid(system)} {{\n')
-    for c in components:
-        cid = pid(c["name"])
-        name = c["name"]
+    out.append(f'package "{system}" as {_pid(system)} {{\n')
+    out.append(f"  actor {USER}\n")
+    for c in comps:
+        cid = _pid(c["name"])
         tech = c.get("package", c.get("layer", ""))
-        # Choose a shape: database if adapter mentions db/blob, else rectangle
-        shape = "database" if "db" in tech.lower() or "blob" in tech.lower() or "store" in tech.lower() else "rectangle"
-        out.append(f'  {shape} "{name}\\n[{tech}]" as {cid}\n')
+        shape = "database" if any(k in tech.lower() for k in ("db", "vector", "store", "blob")) else "rectangle"
+        out.append(f'  {shape} "{c["name"]}\\n[{tech}]" as {cid}\n')
     out.append("}\n\n")
 
     for a, b, label in sorted(rels):
-        a_id = pid(a)
-        b_id = pid(b)
-        if a == "User":
-            out.append(f"{pid('User')} --> {b_id} : {label}\n")
-        else:
-            out.append(f"{a_id} --> {b_id} : {label}\n")
+        a_id = "User" if a == USER else _pid(a)
+        b_id = "User" if b == USER else _pid(b)
+        out.append(f"{a_id} --> {b_id} : {label}\n")
 
     out.append("@enduml\n")
     return "".join(out)
 
 
-
-# -------------------------------
-# Main
-# -------------------------------
-def main() -> None:
+# --- main ---------------------------------------------------------------------
+def main():
     ensure_dirs()
     model = load_model()
 
-    # 1) Structurizr DSL
+    # 1) Structurizr
     (C4_DIR / "structurizr.dsl").write_text(to_structurizr(model), encoding="utf-8")
 
-    # 2) C4-PlantUML
-    (C4_DIR / "c4.puml").write_text(to_c4_plantuml(model), encoding="utf-8")
-
-    # 2b) Plain PlantUML (no includes)
-    (C4_DIR / "c4_plain_dark.puml").write_text(to_plain_plantuml(model, "dark"), encoding="utf-8")
-    (C4_DIR / "c4_plain_light.puml").write_text(to_plain_plantuml(model, "light"), encoding="utf-8")
-
-    # 3) Mermaid sequences per flow
+    # 2) Mermaid
     for name, mmd in to_mermaid_sequences(model).items():
         (MM_DIR / f"{name}.mmd").write_text(mmd, encoding="utf-8")
 
-    # 4) Component pages
-    for c in model.get("components", []) or []:
+    # 3) Component docs
+    for c in iter_components(model):
         (COMP_DIR / f"{c['name']}.md").write_text(component_markdown(c), encoding="utf-8")
 
-    # 5) Import Linter config
-    ARCH_DIR.mkdir(parents=True, exist_ok=True)
+    # 4) Import Linter config
     (ARCH_DIR / "importlinter.ini").write_text(to_import_linter(model), encoding="utf-8")
+
+    # 5) Plain PlantUML (dark + light)
+    (C4_DIR / "c4_plain_dark.puml").write_text(to_plain_plantuml(model, "dark"), encoding="utf-8")
+    (C4_DIR / "c4_plain_light.puml").write_text(to_plain_plantuml(model, "light"), encoding="utf-8")
 
     # 6) Root docs index
     index_md = [f"# {model.get('system', 'System')} — Architecture\n\n"]
@@ -445,13 +412,12 @@ def main() -> None:
         index_md.append(f"- [{c['name']}](./components/{c['name']}.md)\n")
     index_md.append("\n## Diagrams\n\n")
     index_md.append("- [C4 model (Structurizr DSL)](./diagrams/c4/structurizr.dsl)\n")
-    index_md.append("- [C4 model (PlantUML)](./diagrams/c4/c4.puml)\n")
     for flow in model.get("flows", []) or []:
         nm = flow.get("name")
         index_md.append(f"- {nm} (Mermaid): ./diagrams/mermaid/{nm}.mmd\n")
     (DOCS / "index.md").write_text("".join(index_md), encoding="utf-8")
 
-    print("Generated: Structurizr DSL, C4-PlantUML, Mermaid flows, component docs, importlinter.ini")
+    print("Generated: Structurizr DSL, Mermaid flows, component docs, importlinter.ini, PlantUML (dark+light)")
 
 
 if __name__ == "__main__":

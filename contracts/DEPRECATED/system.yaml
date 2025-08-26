@@ -1,0 +1,9 @@
+system: Remote Server
+layers:
+  - { name: interface,      pkg: app.interface }
+  - { name: application,    pkg: app.application }
+  - { name: domain,         pkg: app.domain }
+  - { name: infrastructure, pkg: app.infrastructure }
+invariants:
+  - "All data access is tenant-scoped"
+  - "PII redaction in logs and traces"

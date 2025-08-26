@@ -1,0 +1,24 @@
+components:
+  - name: Indexer
+    layer: domain
+    package: app.domain.indexer
+    responsibilities:
+      - Extract → chunk → embed → upsert
+    consumes:
+      commands: [ { queue: ingestion-jobs, message: IndexJob } ]
+    provides:
+      events: [ { topic: jobs, message: IndexResult } ]
+    invariants:
+      - "Chunk size 1500 ±10%"
+      - "Retries: 3 w/ backoff"
+
+  - name: SearchService
+    layer: domain
+    package: app.domain.search
+    responsibilities:
+      - Hybrid search (BM25+vector) per tenant
+    provides:
+      queries:
+        - { name: search, in: { q: string, limit: int=10, tenant_id: string }, out: SearchResults }
+    invariants:
+      - "Latency p95 ≤ 800ms @ 50 conc/tenant"

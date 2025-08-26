@@ -1,0 +1,13 @@
+sequenceDiagram
+  participant ApiGateway as ApiGateway
+  participant AuthService as AuthService
+  participant ChatService as ChatService
+  participant LLMAdapter as LLMAdapter
+  participant SearchServic as SearchService
+  actor User
+  User->>ApiGateway: POST /v1/chat (message, stream?)
+  ApiGateway->>AuthService: validateToken
+  ApiGateway->>ChatService: chat(ChatRequest)
+  ChatService->>SearchServic: retrieve top-k for grounding
+  ChatService->>LLMAdapter: synthesize answer (prompt+context)
+  ChatService->>ApiGateway: ChatResponse (or WS stream)

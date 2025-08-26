@@ -1,0 +1,27 @@
+components:
+  - name: TelemetryAdapter
+    layer: infrastructure
+    package: app.infrastructure.telemetry
+    responsibilities:
+      - Structured logs, traces, metrics
+    invariants:
+      - "No PII; redact tokens"
+      - "Trace IDs propagated across async boundaries"
+
+  - name: AuditLogAdapter
+    layer: infrastructure
+    package: app.infrastructure.audit
+    responsibilities:
+      - Append-only audit trail
+    invariants:
+      - "AuditEvent schema fixed"
+      - "Every auth/token issuance logged"
+
+messages:
+  - name: AuditEvent
+    fields:
+      - { name: actor, type: string }
+      - { name: action, type: string }
+      - { name: target, type: string }
+      - { name: timestamp, type: datetime }
+      - { name: metadata, type: object }

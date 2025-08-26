@@ -4,12 +4,14 @@
 
 **Responsibilities**
 
-- Validate file; compute checksum; create IndexJob; enqueue
+- Validate upload; compute checksum
+- Persist raw file to blob storage
+- Emit IndexJob to queue
 
 **Provides**
 
 Commands:
-- queue: indexing-jobs message: IndexJob
+- queue: ingestion-jobs message: IndexJob
 
 **Consumes**
 
@@ -17,6 +19,6 @@ Commands:
 
 **Invariants**
 
-- Reject files > 50MB
-- Idempotent jobs (same checksum => no duplicate)
+- Idempotent on (tenant_id, checksum)
+- Reject > 50MB
 

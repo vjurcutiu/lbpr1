@@ -1,0 +1,51 @@
+components:
+  - name: AuthService
+    layer: application
+    package: app.application.auth
+    responsibilities:
+      - Validate API keys/JWT; issue access tokens
+    provides:
+      queries:
+        - { name: validateToken, in: { token: string }, out: { valid: bool, sub: string, tenant_id: string, scopes: "string[]" } }
+    invariants:
+      - "Clock skew ≤ 60s; TTL ≤ 1h"
+
+  - name: TenantService
+    layer: application
+    package: app.application.tenant
+    responsibilities:
+      - Resolve tenant by token; check status/plan
+    provides:
+      queries:
+        - { name: resolveTenant, in: { sub: string }, out: { tenant_id: string, plan: string, status: "enum[active,suspended]" } }
+
+  - name: QuotaService
+    layer: application
+    package: app.application.quota
+    responsibilities:
+      - Per-plan limits for rate limiting and billing
+    provides:
+      queries:
+        - { name: getLimits, in: { plan: string }, out: { rpm: int, max_file_mb: int } }
+
+  - name: RateLimiter
+    layer: application
+    package: app.application.ratelimit
+    responsibilities:
+      - Sliding-window limits per tenant/key
+    provides:
+      queries:
+        - { name: checkAndConsume, in: { key: string, cost: int=1 }, out: { allowed: bool, remaining: int } }
+
+  - name: IngestionService
+    layer: application
+    package: app.application.ingestion
+    responsibilities:
+      - Validate upload; checksum; emit IndexJob
+    consumes:
+      http_from: ApiGateway
+    provides:
+      commands: [ { queue: ingestion-jobs, message: IndexJob } ]
+    invariants:
+      - "Idempotent on (tenant_id, checksum)"
+      - "Reject > getLimits(plan).max_file_mb"
